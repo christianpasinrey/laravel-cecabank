@@ -8,6 +8,7 @@ use Cpr\Cecabank\Models\PaymentTransaction;
 use Cpr\Cecabank\Support\CheckoutPayload;
 use Cpr\Cecabank\Support\SandboxPayload;
 use Illuminate\Support\Str;
+use RuntimeException;
 
 /**
  * Central API for the Cecabank integration.
@@ -36,6 +37,12 @@ class CecabankService
         'Firma',
         'Descripcion',
     ];
+
+    /**
+     * Default time-to-live (seconds) for browser return tokens. Tunable via
+     * config('cecabank.return_token.ttl').
+     */
+    public const DEFAULT_RETURN_TOKEN_TTL = 1800;
 
     // ---------------------------------------------------------------------
     // Public API
@@ -66,9 +73,9 @@ class CecabankService
             $data['fields']['Descripcion'] = $description;
         }
 
-        $transaction = PaymentTransaction::create([
-            'payable_type' => $payable::class,
-            'payable_id' => $payable->getKey(),
+        // payable_type/payable_id are intentionally NOT in $fillable to prevent
+        // mass-assignment-driven polymorphic type confusion; bind explicitly.
+        $transaction = new PaymentTransaction([
             'payment_gateway_id' => $gateway->id,
             'operation_number' => $operationNumber,
             'amount' => $payable->paymentAmount(),
@@ -77,6 +84,8 @@ class CecabankService
             'signature_sent' => $data['signature'],
             'raw_request' => $data['fields'],
         ]);
+        $transaction->payable()->associate($payable);
+        $transaction->save();
 
         return new CheckoutPayload(
             fields: $data['fields'],
@@ -126,8 +135,6 @@ class CecabankService
         );
 
         $transaction = PaymentTransaction::create([
-            'payable_type' => null,
-            'payable_id' => null,
             'payment_gateway_id' => $gateway->id,
             'operation_number' => $operationNumber,
             'amount' => $amount,
@@ -257,21 +264,54 @@ class CecabankService
     }
 
     /**
-     * Stable HMAC bound to an operation number, used to authenticate URL_OK /
-     * URL_NOK returns (i.e. detect a tampered query string).
+     * Issue a TTL'd signed envelope binding an operation number to the time
+     * it was issued. Travels in URL_OK / URL_NOK query strings.
+     *
+     * Format: base64url(operationNumber|issuedAt|hmac)
      */
     public function returnToken(string $operationNumber): string
     {
-        return hash_hmac('sha256', $operationNumber, (string) config('app.key'));
+        $secret = $this->appKey();
+        $issuedAt = time();
+        $payload = $operationNumber.'|'.$issuedAt;
+        $mac = hash_hmac('sha256', $payload, $secret);
+
+        return rtrim(strtr(base64_encode($payload.'|'.$mac), '+/', '-_'), '=');
     }
 
+    /**
+     * Verify a return token: same operation number, valid HMAC, not expired.
+     */
     public function verifyReturnToken(string $operationNumber, string $token): bool
     {
         if ($operationNumber === '' || $token === '') {
             return false;
         }
 
-        return hash_equals($this->returnToken($operationNumber), $token);
+        $raw = base64_decode(strtr($token, '-_', '+/'), true);
+        if ($raw === false) {
+            return false;
+        }
+
+        $parts = explode('|', $raw, 3);
+        if (count($parts) !== 3) {
+            return false;
+        }
+
+        [$op, $issuedAt, $mac] = $parts;
+
+        if (! hash_equals($operationNumber, $op)) {
+            return false;
+        }
+
+        $ttl = (int) config('cecabank.return_token.ttl', self::DEFAULT_RETURN_TOKEN_TTL);
+        if ($ttl > 0 && (time() - (int) $issuedAt) > $ttl) {
+            return false;
+        }
+
+        $expected = hash_hmac('sha256', $op.'|'.$issuedAt, $this->appKey());
+
+        return hash_equals($expected, (string) $mac);
     }
 
     /**
@@ -305,12 +345,15 @@ class CecabankService
 
     public function generateOperationNumber(Payable $payable): string
     {
-        return 'OP'.$payable->getKey().'T'.time();
+        // Random suffix avoids collisions when the same payable is checked-out
+        // twice in the same second, and removes the leaked timing-side-channel
+        // that 'OP{id}T{epoch}' provided.
+        return 'OP'.$payable->getKey().'-'.strtoupper(Str::random(12));
     }
 
     public function generateSandboxOperationNumber(): string
     {
-        return 'SBX'.time().strtoupper(Str::random(4));
+        return 'SBX-'.strtoupper(Str::random(16));
     }
 
     /**
@@ -323,13 +366,27 @@ class CecabankService
         $name = (string) config("cecabank.sandbox_return_routes.{$kind}", '');
 
         if ($name === '') {
-            throw new \RuntimeException(
+            throw new RuntimeException(
                 "Cecabank sandbox checkout needs config('cecabank.sandbox_return_routes.{$kind}') ".
                 'to be set to the route name of your host-owned sandbox handler.'
             );
         }
 
         return route($name, ['operationNumber' => $operationNumber]);
+    }
+
+    private function appKey(): string
+    {
+        $key = (string) config('app.key');
+
+        if ($key === '') {
+            throw new RuntimeException(
+                'cpr/laravel-cecabank requires a non-empty config("app.key"). '.
+                'Run `php artisan key:generate` before issuing or verifying return tokens.'
+            );
+        }
+
+        return $key;
     }
 
     // ---------------------------------------------------------------------

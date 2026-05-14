@@ -1,11 +1,24 @@
 # cpr/laravel-cecabank
 
+[![Tests](https://github.com/christianpasinrey/laravel-cecabank/actions/workflows/tests.yml/badge.svg)](https://github.com/christianpasinrey/laravel-cecabank/actions/workflows/tests.yml)
+
 Cecabank TPV (Virtual POS) integration for Laravel — **frontend-agnostic**.
 
 The package ships the data model, signature engine, polymorphic transaction
 log, lifecycle events and public callback routes. Everything user-facing
 (admin CRUD, redirect page, sandbox UI) is the host's job: render it with
 Blade, Inertia + Vue, Livewire, React… the package only hands you DTOs.
+
+## Security at a glance
+
+- Server-to-server callback authenticated by Cecabank's SHA-256 signature, verified with `hash_equals`.
+- Browser return URLs authenticated by a TTL'd HMAC token bound to the operation number (`config('cecabank.return_token.ttl')`, default 30 min).
+- All state transitions run inside `DB::transaction { lockForUpdate; … }` — concurrent callbacks cannot double-fulfil.
+- `payable_type` / `payable_id` are intentionally NOT mass-assignable; use `PaymentTransaction::attachPayable($payable)`.
+- The provider refuses to boot if `cecabank.urls.{test,production}` aren't `https://` to a `.ceca.es` host.
+- The callback route lives OUTSIDE the `web` middleware group so CSRF can never reject a legitimate Cecabank confirmation.
+
+See `SECURITY-AUDIT.md` for the full third-party review and the patches that addressed it.
 
 ## Install
 

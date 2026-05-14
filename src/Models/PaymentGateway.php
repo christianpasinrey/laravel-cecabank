@@ -81,9 +81,17 @@ class PaymentGateway extends Model
         return $query->where('is_active', true);
     }
 
+    /**
+     * Resolve the single active Cecabank gateway. Uses `sole()` so a
+     * mis-seeded database with two active rows fails loud instead of
+     * silently picking the first one (which would route money to the
+     * wrong merchant and sign with the wrong key).
+     */
     public static function active(): self
     {
-        return self::where('is_active', true)->firstOrFail();
+        return self::where('provider', 'cecabank')
+            ->where('is_active', true)
+            ->sole();
     }
 
     /**

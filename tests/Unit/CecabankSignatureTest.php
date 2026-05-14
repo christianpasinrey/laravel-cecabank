@@ -3,6 +3,8 @@
 namespace Cpr\Cecabank\Tests\Unit;
 
 use Cpr\Cecabank\CecabankService;
+use Cpr\Cecabank\Contracts\Payable;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 class CecabankSignatureTest extends TestCase
@@ -14,6 +16,10 @@ class CecabankSignatureTest extends TestCase
         parent::setUp();
         $this->service = new CecabankService;
     }
+
+    // ---------------------------------------------------------------------
+    // Amount + signature primitives
+    // ---------------------------------------------------------------------
 
     public function test_amount_to_cents_converts_correctly(): void
     {
@@ -71,5 +77,102 @@ class CecabankSignatureTest extends TestCase
             '2b7f686593f1a424c510321e4bc354d21924e02e980a90f4d46c41f92a06f5a9',
             $this->service->calculateSignature($chain),
         );
+    }
+
+    // ---------------------------------------------------------------------
+    // M-1 regression: operation_number must not collide and must fit varchar(50)
+    // ---------------------------------------------------------------------
+
+    public function test_operation_numbers_are_unique_and_fit_column(): void
+    {
+        // Old format 'OP{id}T{epoch}' collided whenever the same payable was
+        // checked-out twice in the same second; the new random suffix must
+        // produce 1000 distinct numbers AND fit varchar(50).
+        $payable = new TestablePayable(42);
+        $seen = [];
+        for ($i = 0; $i < 1000; $i++) {
+            $op = $this->service->generateOperationNumber($payable);
+            $this->assertLessThanOrEqual(50, strlen($op), 'operation_number must fit varchar(50)');
+            $this->assertStringStartsWith('OP42-', $op);
+            $seen[$op] = true;
+        }
+        $this->assertCount(1000, $seen, 'all operation numbers must be distinct');
+    }
+
+    // ---------------------------------------------------------------------
+    // M-4 regression: sanitizeResponse drops everything outside the allow-list
+    // ---------------------------------------------------------------------
+
+    /**
+     * @param  array<string, mixed>  $input
+     * @param  array<string, string>  $expected
+     */
+    #[DataProvider('sensitiveFieldProvider')]
+    public function test_sanitize_response_strips_unknown_keys(array $input, array $expected): void
+    {
+        $this->assertSame($expected, $this->service->sanitizeResponse($input));
+    }
+
+    public static function sensitiveFieldProvider(): array
+    {
+        return [
+            'allow-listed Firma kept, PAN-like data stripped' => [
+                ['Firma' => 'sig', 'Pan' => '4111111111111111', 'CVV2' => '123', 'Caducidad' => '1230'],
+                ['Firma' => 'sig'],
+            ],
+            'arbitrary unknown fields dropped' => [
+                ['hostInjected' => 'evil', 'X-Forwarded-For' => '1.2.3.4'],
+                [],
+            ],
+            'non-scalar values for allow-listed keys are dropped' => [
+                ['Firma' => ['nested'], 'Referencia' => (object) ['x' => 1]],
+                [],
+            ],
+            'mixed valid + invalid' => [
+                ['MerchantID' => '123', 'leaked' => 'data', 'Num_aut' => '999999'],
+                ['MerchantID' => '123', 'Num_aut' => '999999'],
+            ],
+        ];
+    }
+}
+
+// Minimal Payable used only for operation-number generation tests.
+class TestablePayable implements Payable
+{
+    public function __construct(private int|string $key) {}
+
+    public function getKey()
+    {
+        return $this->key;
+    }
+
+    public function paymentAmount(): float
+    {
+        return 1.0;
+    }
+
+    public function paymentReference(): string
+    {
+        return 'REF';
+    }
+
+    public function paymentDescription(): ?string
+    {
+        return null;
+    }
+
+    public function isPayable(): bool
+    {
+        return true;
+    }
+
+    public function paymentSuccessRoute(): string
+    {
+        return 'home';
+    }
+
+    public function paymentFailureRoute(): string
+    {
+        return 'home';
     }
 }

@@ -6,11 +6,20 @@ return [
     |--------------------------------------------------------------------------
     | Cecabank gateway endpoints
     |--------------------------------------------------------------------------
+    |
+    | These URLs are where the client browser is POSTed with signed card data.
+    | The service provider refuses to boot if either URL doesn't match
+    | `allowed_url_host_suffixes` below or doesn't use https — defense against
+    | a leaked / mis-set env redirecting card-bearing traffic to an attacker
+    | origin.
+    |
     */
     'urls' => [
         'test' => env('CECABANK_TEST_URL', 'https://tpv.ceca.es/tpvweb/tpv/compra.action'),
         'production' => env('CECABANK_PROD_URL', 'https://pgw.ceca.es/tpvweb/tpv/compra.action'),
     ],
+
+    'allowed_url_host_suffixes' => ['.ceca.es'],
 
     'exponent' => '2',
     'supported_payment' => 'SSL',
@@ -18,17 +27,30 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | Public routes (URL_OK / URL_NOK / callback)
+    | Routes
     |--------------------------------------------------------------------------
     |
-    | These are owned by the package because Cecabank itself calls them.
-    | Adjust the prefix and middleware here.
+    | `public` is the browser-facing pair (URL_OK / URL_NOK landings). They
+    | live inside the `web` middleware group so flash messages work, but
+    | VerifyCsrfToken is dropped per route because Cecabank can't send a CSRF
+    | token (the routes are authenticated by an HMAC return token instead).
+    |
+    | `callback` is the server-to-server confirmation. Intentionally OUTSIDE
+    | `web` — no session, no CSRF, no cookie encryption. Authenticated by
+    | Cecabank's SHA-256 signature, verified in the controller.
+    |
+    | Both stacks rate-limit themselves; separate buckets so a browser-side
+    | burst can never starve legitimate server-to-server confirmations.
     |
     */
     'routes' => [
         'public' => [
             'prefix' => 'payment',
             'middleware' => ['web', 'throttle:60,1'],
+        ],
+        'callback' => [
+            'prefix' => 'payment',
+            'middleware' => ['throttle:120,1'],
         ],
     ],
 
@@ -44,6 +66,21 @@ return [
     'fallback_routes' => [
         'success' => 'home',
         'failure' => 'home',
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | URL_OK / URL_NOK return token
+    |--------------------------------------------------------------------------
+    |
+    | The token attached to URL_OK / URL_NOK query strings is a signed envelope
+    | binding (operationNumber, issuedAt) under app.key. `ttl` is the maximum
+    | age (seconds) a token will be honored; older tokens are rejected so a
+    | leaked Referer / log line stops being a permanent skeleton key.
+    |
+    */
+    'return_token' => [
+        'ttl' => 1800,
     ],
 
     /*

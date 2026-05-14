@@ -27,7 +27,7 @@ return new class extends Migration
             $table->string('signature_response')->nullable();
             $table->json('raw_request')->nullable();
             $table->json('raw_response')->nullable();
-            $table->string('error_message')->nullable();
+            $table->text('error_message')->nullable();
             $table->timestamp('completed_at')->nullable();
             $table->timestamps();
 

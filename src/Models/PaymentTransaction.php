@@ -14,9 +14,14 @@ class PaymentTransaction extends Model
     /** @use HasFactory<PaymentTransactionFactory> */
     use HasFactory;
 
+    /**
+     * `payable_type` and `payable_id` are INTENTIONALLY excluded from
+     * `$fillable`. The polymorphic relation must always be set through
+     * {@see self::attachPayable()} (which calls `payable()->associate()`)
+     * so a host that forwards `$request->all()` into `create()` cannot
+     * make the package instantiate arbitrary Eloquent classes.
+     */
     protected $fillable = [
-        'payable_type',
-        'payable_id',
         'payment_gateway_id',
         'operation_number',
         'amount',
@@ -67,6 +72,22 @@ class PaymentTransaction extends Model
         $record = $this->payable;
 
         return $record instanceof Payable ? $record : null;
+    }
+
+    /**
+     * Explicit, type-checked setter for the polymorphic payable. The only
+     * supported way to attach a payable to a transaction; mass-assignment is
+     * forbidden by design (see `$fillable` docblock).
+     */
+    public function attachPayable(Payable $payable): self
+    {
+        $this->payable()->associate($payable);
+
+        if ($this->exists) {
+            $this->save();
+        }
+
+        return $this;
     }
 
     public function paymentGateway(): BelongsTo
