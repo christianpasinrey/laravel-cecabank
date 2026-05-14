@@ -46,14 +46,18 @@ class PaymentGateway extends Model
         return PaymentGatewayFactory::new();
     }
 
+    /**
+     * Encryption key currently in use for this gateway, picked from its
+     * declared `environment`. `test` -> test key, `production` -> prod key.
+     */
     public function getEncryptionKeyAttribute(): ?string
     {
-        return $this->encryption_key_prod ?: $this->encryption_key_test;
+        return $this->getEncryptionKeyForEnvironment($this->environment);
     }
 
     public function getEncryptionKeyForEnvironment(?string $environment = null): ?string
     {
-        $env = $environment ?: 'production';
+        $env = $environment ?: $this->environment ?: 'production';
 
         return $env === 'production'
             ? $this->encryption_key_prod
@@ -62,7 +66,7 @@ class PaymentGateway extends Model
 
     public function getGatewayUrlForEnvironment(?string $environment = null): string
     {
-        $env = $environment ?: 'production';
+        $env = $environment ?: $this->environment ?: 'production';
 
         return (string) config("cecabank.urls.{$env}");
     }
@@ -82,8 +86,11 @@ class PaymentGateway extends Model
         return self::where('is_active', true)->firstOrFail();
     }
 
+    /**
+     * Live gateway URL — honors this gateway's `environment`.
+     */
     public function getGatewayUrl(): string
     {
-        return (string) config('cecabank.urls.production');
+        return $this->getGatewayUrlForEnvironment($this->environment);
     }
 }

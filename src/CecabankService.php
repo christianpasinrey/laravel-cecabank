@@ -73,7 +73,7 @@ class CecabankService
             'operation_number' => $operationNumber,
             'amount' => $payable->paymentAmount(),
             'status' => 'pending',
-            'environment' => 'production',
+            'environment' => $gateway->environment ?: 'production',
             'signature_sent' => $data['signature'],
             'raw_request' => $data['fields'],
         ]);
